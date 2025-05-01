@@ -53,6 +53,9 @@ class RewardVecEnvWrapper(vec_env.VecEnvWrapper):
         venv: vec_env.VecEnv,
         reward_fn: reward_function.RewardFn,
         ep_history: int = 100,
+        use_uncertainty_feedback = True,
+        uncertainty_threshold = 0.5,  # je nach Skala deiner Rewards
+        step_feedback = []
     ):
         """Builds RewardVecEnvWrapper.
 
@@ -113,8 +116,30 @@ class RewardVecEnvWrapper(vec_env.VecEnvWrapper):
             types.maybe_unwrap_dictobs(obs_fixed),
             np.array(dones),
         )
+
+        # === SINGLE-STEP UNCERTAINTY FEEDBACK HOOK ===
+        if self.use_uncertainty_feedback and hasattr(self.reward_fn, "predict_processed_all"):
+            obs_old = types.assert_not_dictobs(self._old_obs)
+            acts = self._actions
+            next_obs = types.assert_not_dictobs(obs_fixed)
+            dones_arr = np.array(dones)
+
+            all_model_rews = self.reward_fn.predict_processed_all(obs_old, acts, next_obs, dones_arr)
+            for i in range(len(obs)):
+                model_rews = all_model_rews[i]
+                variance = np.var(model_rews)
+                if variance > self.uncertainty_threshold:
+                    rew_env = old_rews[i]
+                    feedback = +1 if rew_env > 0 else -1
+                    ob = self._old_obs[i]
+                    act = self._actions[i]
+                    rew = rews[i]
+                    self.step_feedback.append((ob, act, rew, feedback, variance))
+                    print(f"[Feedback] env={i}, variance={variance:.3f}, feedback={feedback}")
+
+        
         assert len(rews) == len(obs), "must return one rew for each env"
-        done_mask = np.asarray(dones, dtype="bool").reshape((len(dones),))
+
 
         # Update statistics
         self._cumulative_rew += rews
